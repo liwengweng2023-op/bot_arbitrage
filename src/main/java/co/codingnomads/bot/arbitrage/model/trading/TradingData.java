@@ -40,6 +40,8 @@ public class TradingData {
     String sellExchange;
     String baseName;
     String counterName;
+    String baseCurrency;
+    String counterCurrency;
     BigDecimal expectedDifference;
     BigDecimal expectedDifferenceFormatted;
 
@@ -69,8 +71,8 @@ public class TradingData {
         this.differenceTotalBase = newTotalBase.divide(oldTotalBase, 5, BigDecimal.ROUND_HALF_EVEN).add(BigDecimal.valueOf(-1)).multiply(BigDecimal.valueOf(100));
         this.buyExchange = lowAsk.getExchange().getExchangeSpecification().getExchangeName();
         this.sellExchange = highBid.getExchange().getExchangeSpecification().getExchangeName();
-        this.baseName = lowAsk.getCurrencyPair().base.toString();
-        this.counterName = lowAsk.getCurrencyPair().counter.toString();
+        this.baseCurrency = lowAsk.getCurrencyPair().base.getCurrencyCode();
+        this.counterCurrency = lowAsk.getCurrencyPair().counter.getCurrencyCode();
         this.expectedDifference = highBid.getBid().divide(lowAsk.getAsk(), 5, RoundingMode.HALF_EVEN);
         this.expectedDifferenceFormatted = expectedDifference.add(BigDecimal.valueOf(-1)).multiply(BigDecimal.valueOf(100));
         this.estimatedFee = expectedDifferenceFormatted.subtract(realDifferenceFormated);

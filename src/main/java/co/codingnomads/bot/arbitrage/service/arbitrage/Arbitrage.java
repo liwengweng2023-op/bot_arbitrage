@@ -29,7 +29,7 @@ import java.util.concurrent.*;
 @Service
 public class Arbitrage {
 
-    BalanceCalc balanceCalc = new BalanceCalc();
+    // BalanceCalc balanceCalc; // 暂时注释，类已移除 = new BalanceCalc();
 
     ExchangeDataGetter exchangeDataGetter = new ExchangeDataGetter();
 
@@ -81,7 +81,7 @@ public class Arbitrage {
 
             for (ExchangeSpecs exchange : selectedExchanges) {
 
-                if (exchange.GetSetupedExchange().getApiKey() == null || exchange.GetSetupedExchange().getSecretKey() == null) {
+                if (exchange.GetSetupedExchange().getSecretKey() == null) {
 
                     throw new ExchangeDataException("You must enter correct exchange specs for " + exchange.GetSetupedExchange().getExchangeName());
                 }
@@ -89,7 +89,7 @@ public class Arbitrage {
             }
 
             //prints balance out for the selectedExchanges
-            balanceCalc.Balance(selectedExchanges, currencyPair);
+            // balanceCalc.Balance(selectedExchanges, currencyPair); // 暂时注释，BalanceCalc类已移除
         }
 
 
@@ -104,24 +104,28 @@ public class Arbitrage {
         //sets the tradeValueBase given in the controller for arbitrageTradingAction
         if (tradingMode) tradeValueBase = ((ArbitrageTradingAction) arbitrageActionSelection).getTradeValueBase();
 
+        //Create an ArrrayList of TickerData and set it to the get all ticker data method from the exchange data getter class
+        ArrayList<TickerData> listTickerData = exchangeDataGetter.getAllTickerData(activatedExchanges, currencyPair, BigDecimal.valueOf(tradeValueBase));
 
-        //convert the double tradeValueBase to a big decimal
-        BigDecimal valueOfTradeValueBase = BigDecimal.valueOf(tradeValueBase);
+        //if the list of ticker data is empty the currencypair is not supported on the exchange
+        if (tradingMode && listTickerData.size() == 0) {
 
+            throw new ExchangeDataException("Unable to pull exchange data, either the pair " + currencyPair + " is not supported on the exchange/s selected" +
+                    " or you do not have a wallet with the needed trade base of " + tradeValueBase + currencyPair.base);
+        }
 
         //makes while loop run continuously, if loopIteration is set, and only once is not set
         while (loopIterations >= 0) {
 
-
             //Create an ArrrayList of TickerData and set it to the get all ticker data method from the exchange data getter class
-            ArrayList<TickerData> listTickerData = exchangeDataGetter.getAllTickerData(
+            ArrayList<TickerData> tickerDataList = exchangeDataGetter.getAllTickerData(
 
                     activatedExchanges,
                     currencyPair,
-                    valueOfTradeValueBase);
+                    BigDecimal.valueOf(tradeValueBase));
 
             //if the list of ticker data is empty the currencypair is not supported on the exchange
-            if (tradingMode && listTickerData.size() == 0) {
+            if (tradingMode && tickerDataList.size() == 0) {
 
                 throw new ExchangeDataException("Unable to pull exchange data, either the pair " + currencyPair + " is not supported on the exchange/s selected" +
                         " or you do not have a wallet with the needed trade base of " + tradeValueBase + currencyPair.base);
@@ -129,9 +133,9 @@ public class Arbitrage {
 
 
             //find the best sell price
-            TickerData highBid = dataUtil.highBidFinder(listTickerData);
+            TickerData highBid = dataUtil.highBidFinder(tickerDataList);
             //find the best buy price
-            TickerData lowAsk = dataUtil.lowAskFinder(listTickerData);
+            TickerData lowAsk = dataUtil.lowAskFinder(tickerDataList);
 
 
             //new BigDecimal set to the difference of the best sell price and the best buy price

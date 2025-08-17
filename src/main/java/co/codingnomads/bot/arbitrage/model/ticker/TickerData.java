@@ -16,6 +16,13 @@ public class TickerData {
     Exchange exchange;
     private BigDecimal bid;
     private BigDecimal ask;
+    private BigDecimal last;
+
+    /**
+     * Default constructor
+     */
+    public TickerData() {
+    }
 
     /**
      * Constructor for the TickerData class
@@ -61,6 +68,14 @@ public class TickerData {
 
     public void setCurrencyPair(CurrencyPair currencyPair) {
         this.currencyPair = currencyPair;
+    }
+
+    public BigDecimal getLast() {
+        return last;
+    }
+
+    public void setLast(BigDecimal last) {
+        this.last = last;
     }
 
     @Override

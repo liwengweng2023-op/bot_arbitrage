@@ -5,11 +5,13 @@ import co.codingnomads.bot.arbitrage.action.arbitrage.ArbitrageTradingAction;
 import co.codingnomads.bot.arbitrage.action.arbitrage.ArbitrageEmailAction;
 import co.codingnomads.bot.arbitrage.action.detection.DetectionLogAction;
 import co.codingnomads.bot.arbitrage.action.detection.DetectionPrintAction;
-import co.codingnomads.bot.arbitrage.action.detection.selection.DetectionActionSelection;
 import co.codingnomads.bot.arbitrage.exception.ExchangeDataException;
 import co.codingnomads.bot.arbitrage.exception.EmailLimitException;
 import co.codingnomads.bot.arbitrage.exception.WaitTimeException;
-import co.codingnomads.bot.arbitrage.exchange.*;
+import co.codingnomads.bot.arbitrage.exchange.BinanceSpecs;
+import co.codingnomads.bot.arbitrage.exchange.ExchangeSpecs;
+// import co.codingnomads.bot.arbitrage.exchange.HuobiSpecs; // 暂时移除
+import co.codingnomads.bot.arbitrage.service.websocket.StreamingArbitrageService;
 import co.codingnomads.bot.arbitrage.service.detection.Detection;
 import co.codingnomads.bot.arbitrage.service.detection.DetectionService;
 import co.codingnomads.bot.arbitrage.service.email.EmailService;
@@ -62,6 +64,9 @@ public class Controller {
     @Autowired
     DetectionPrintAction detectionPrintAction;
 
+    @Autowired
+    StreamingArbitrageService streamingArbitrageService;
+
 
     /**
      * runBot method, choose one of the three arbitrage actions or two detection actions to run
@@ -87,15 +92,21 @@ public class Controller {
 
 //      set the exchanges you wish to use, you may optionally set the specific exchange specifications to enable trading action
         ArrayList<ExchangeSpecs> ExchangeList = new ArrayList<>();
-        ExchangeList.add(new KrakenSpecs());
-        ExchangeList.add(new GDAXSpecs());
-        ExchangeList.add(new BittrexSpecs());
+        // 只保留币安交易所进行差价对比
         ExchangeList.add(new BinanceSpecs());
-        ExchangeList.add(new PoloniexSpecs());
-        ExchangeList.add(new BittrexSpecs());
-        ExchangeList.add(new GeminiSpecs());
+        // ExchangeList.add(new HuobiSpecs()); // 暂时移除
+        
+        // 其他交易所已注释
+        // ExchangeList.add(new KrakenSpecs());
+        // ExchangeList.add(new BittrexSpecs());
+        // ExchangeList.add(new PoloniexSpecs());
+        // ExchangeList.add(new GeminiSpecs());
 
-        //choose one and only one of the following Arbitrage or Detection trade actions
+        //choose one and only one of the following Arbitrage, WebSocket Streaming, or Detection trade actions
+
+//WebSocket Streaming Arbitrage (实时监控)
+        // 启用WebSocket实时套利监测
+//        streamingArbitrageService.startArbitrageDetection();
 
 //Arbitrage
 
@@ -116,7 +127,7 @@ public class Controller {
 //                arbitrageTradingAction);
 
 
-//      Example of an Arbitrage print action that finds the best trading pair every hour
+//      ExamplarbitragePrintAction = {ArbitragePrintAction@3598} e of an Arbitrage print action that finds the best trading pair every hour
       arbitragePrintAction.setArbitrageMargin(0.03);  //0.03 = 0.03 %
       arbitrage.run(
                     CurrencyPair.ETH_USD,
@@ -151,6 +162,22 @@ public class Controller {
 //    detection.run(currencyPairList, ExchangeList, detectionActionSelection1);
 
 
+    }
+
+    /**
+     * 启动WebSocket实时套利监测
+     * 使用XChange-stream 4.4.2进行币安和火币的实时价格监控
+     * @throws Exception
+     */
+    public void runWebSocketArbitrage() throws Exception {
+        System.out.println("🚀 启动WebSocket实时套利监测服务...");
+        System.out.println("📊 监控交易所: 币安 (Binance)");
+        System.out.println("💱 监控交易对: ETH/USDT");
+        System.out.println("⚡ 实时数据流: WebSocket连接");
+        System.out.println("💡 按 Ctrl+C 停止服务");
+        
+        // 启动WebSocket实时套利监测
+        streamingArbitrageService.startArbitrageDetection();
     }
 }
 
