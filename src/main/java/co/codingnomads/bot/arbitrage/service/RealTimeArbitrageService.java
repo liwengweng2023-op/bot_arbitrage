@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.zip.GZIPInputStream;
 import java.util.Date;
+ import java.nio.ByteBuffer;
 
 @Service
 public class RealTimeArbitrageService {
@@ -36,11 +37,14 @@ public class RealTimeArbitrageService {
     private static final double MIN_ARBITRAGE_MARGIN = 0.03; // 0.03%
     private static final int CONNECTION_TIMEOUT_MS = 60_000; // 60 seconds
     private static final int RECONNECT_DELAY_MS = 5000; // 5 seconds
+    private static final int TIME_DIFF_SAMPLES = 50;
+    private static final double TIME_DIFF_THRESHOLD_MULTIPLIER = 1.5;
     
     // State management
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Map<String, Map<String, Double>> exchangePrices = new ConcurrentHashMap<>();
     private final Map<String, Long> lastUpdateTime = new ConcurrentHashMap<>();
+    private final List<Long> recentTimeDiffs = new CopyOnWriteArrayList<>();
     private volatile long dynamicMaxTimestampDiffMs = INITIAL_MAX_TIMESTAMP_DIFF_MS;
     
     // Performance metrics
@@ -56,23 +60,36 @@ public class RealTimeArbitrageService {
     // WebSocket client implementation for Binance
     private class BinanceWebSocketClient extends ExchangeWebSocketClient {
         public BinanceWebSocketClient(URI serverUri) {
-            super("币安", serverUri, message -> {
-                if (message instanceof String) {
-                    handleBinanceMessage((String) message);
-                } else if (message instanceof byte[]) {
-                    try {
-                        String decompressed = RealTimeArbitrageService.this.decompressGzip((byte[]) message);
-                        if (!decompressed.isEmpty()) {
-                            handleBinanceMessage(decompressed);
-                        }
-                    } catch (Exception e) {
-                        System.err.println(ANSI_RED + "[Binance] 处理二进制消息时出错: " + e.getMessage() + ANSI_RESET);
-                    }
+            // 关键修复：super() 传入一个不捕获外部实例的空处理器，避免在构造期间引用外部 this
+            super("币安", serverUri, msg -> {});
+            // 连接空闲超时
+            this.setConnectionLostTimeout(60);
+        }
+
+        // 覆盖消息回调，在这里安全地访问外部类方法
+        @Override
+        public void onMessage(String message) {
+            try {
+                handleBinanceMessage(message);
+            } catch (Exception e) {
+                System.err.println(ANSI_RED + "[Binance] 处理文本消息时出错: " + e.getMessage() + ANSI_RESET);
+                e.printStackTrace();
+            }
+        }
+
+        @Override
+        public void onMessage(ByteBuffer bytes) {
+            try {
+                byte[] byteArray = new byte[bytes.remaining()];
+                bytes.get(byteArray);
+                String decompressed = decompressGzip(byteArray);
+                if (!decompressed.isEmpty()) {
+                    handleBinanceMessage(decompressed);
                 }
-            });
-            
-            // Set connection timeout
-            this.setConnectionLostTimeout(60); // 60 seconds
+            } catch (Exception e) {
+                System.err.println(ANSI_RED + "[Binance] 处理二进制消息时出错: " + e.getMessage() + ANSI_RESET);
+                e.printStackTrace();
+            }
         }
         
         private void handleBinanceMessage(String message) {
@@ -102,16 +119,28 @@ public class RealTimeArbitrageService {
         private final Object pingLock = new Object();
 
         public HuobiWebSocketClient(URI serverUri) {
-            super("火币", serverUri, message -> {
-                if (message instanceof byte[]) {
-                    handleHuobiMessage((byte[]) message);
-                } else if (message instanceof String) {
-                    System.out.println(ANSI_CYAN + "[Huobi] 收到文本消息: " + message + ANSI_RESET);
-                }
-            });
-            
+            // 关键修复：避免在 super() 中捕获外部 this
+            super("火币", serverUri, msg -> {});
             // Set connection timeout
             this.setConnectionLostTimeout(60); // 60 seconds
+        }
+
+        // 覆盖消息回调，安全处理文本/二进制
+        @Override
+        public void onMessage(String message) {
+            System.out.println(ANSI_CYAN + "[Huobi] 收到文本消息: " + message + ANSI_RESET);
+        }
+
+        @Override
+        public void onMessage(ByteBuffer bytes) {
+            try {
+                byte[] byteArray = new byte[bytes.remaining()];
+                bytes.get(byteArray);
+                handleHuobiMessage(byteArray);
+            } catch (Exception e) {
+                System.err.println(ANSI_RED + "[Huobi] 处理二进制消息时出错: " + e.getMessage() + ANSI_RESET);
+                e.printStackTrace();
+            }
         }
 
         @Override
