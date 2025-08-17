@@ -258,18 +258,10 @@ public class RealTimeArbitrageService {
         }
     }
     
-    private synchronized void updatePrice(String exchange, double bid, double ask) {
-        Map<String, Double> prices = new HashMap<>();
-        prices.put("bid", bid);
-        prices.put("ask", ask);
-        exchangePrices.put(exchange, prices);
-    }
-    
-    private long lastPrintTime = 0;
-    private static final long PRINT_INTERVAL = 5000; // 5秒打印一次无套利信息
-    
     private final Map<String, Long> lastUpdateTime = new ConcurrentHashMap<>();
     private static final long PRICE_EXPIRY_MS = 5000; // 5秒价格过期时间
+    private static final long PRINT_INTERVAL = 5000; // 5秒打印一次无套利信息
+    private long lastPrintTime = 0;
     
     private synchronized void updatePrice(String exchange, double bid, double ask) {
         Map<String, Double> prices = new HashMap<>();
