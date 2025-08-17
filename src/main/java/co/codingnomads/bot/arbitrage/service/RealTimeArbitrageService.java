@@ -268,11 +268,37 @@ public class RealTimeArbitrageService {
     private long lastPrintTime = 0;
     private static final long PRINT_INTERVAL = 5000; // 5秒打印一次无套利信息
     
+    private final Map<String, Long> lastUpdateTime = new ConcurrentHashMap<>();
+    private static final long PRICE_EXPIRY_MS = 5000; // 5秒价格过期时间
+    
+    private synchronized void updatePrice(String exchange, double bid, double ask) {
+        Map<String, Double> prices = new HashMap<>();
+        prices.put("bid", bid);
+        prices.put("ask", ask);
+        exchangePrices.put(exchange, prices);
+        lastUpdateTime.put(exchange, System.currentTimeMillis());
+    }
+    
+    private String formatTime(long timestamp) {
+        return new java.text.SimpleDateFormat("HH:mm:ss.SSS").format(new java.util.Date(timestamp));
+    }
+    
     private synchronized void checkArbitrageOpportunity() {
         if (exchangePrices.size() < 2) return;
         
         String exchange1 = "币安";
         String exchange2 = "火币";
+        
+        // 检查数据是否过期
+        long currentTime = System.currentTimeMillis();
+        Long lastUpdate1 = lastUpdateTime.get(exchange1);
+        Long lastUpdate2 = lastUpdateTime.get(exchange2);
+        
+        if (lastUpdate1 == null || lastUpdate2 == null || 
+            currentTime - lastUpdate1 > PRICE_EXPIRY_MS || 
+            currentTime - lastUpdate2 > PRICE_EXPIRY_MS) {
+            return; // 数据已过期，不计算套利机会
+        }
         
         Map<String, Double> prices1 = exchangePrices.get(exchange1);
         Map<String, Double> prices2 = exchangePrices.get(exchange2);
@@ -291,28 +317,35 @@ public class RealTimeArbitrageService {
         boolean hasArbitrage = false;
         
         // 打印套利机会
-        System.out.println("\n=== 实时套利机会 ===");
-        System.out.println("[" + exchange1 + "] 买一价: " + bid1 + " 卖一价: " + ask1);
-        System.out.println("[" + exchange2 + "] 买一价: " + bid2 + " 卖一价: " + ask2);
+        System.out.println("\n=== 实时套利机会 (" + formatTime(currentTime) + ") ===");
+        System.out.println(String.format("[%s] 时间: %s  买一价: %.2f  卖一价: %.2f", 
+            exchange1, formatTime(lastUpdate1), bid1, ask1));
+        System.out.println(String.format("[%s] 时间: %s  买一价: %.2f  卖一价: %.2f", 
+            exchange2, formatTime(lastUpdate2), bid2, ask2));
         
+        // 套利方向1: 在火币买入，在币安卖出
         if (arbitrageBuyAtExchange2SellAtExchange1 > 0.1) {
-            System.out.println(String.format("\n套利机会: 在 %s 买入, 在 %s 卖出, 利润: %.4f%%", 
-                    exchange2, exchange1, arbitrageBuyAtExchange2SellAtExchange1));
+            System.out.println(String.format("\n套利机会: 在 %s(%.2f) 买入, 在 %s(%.2f) 卖出, 利润: %.4f%%", 
+                    exchange2, ask2, exchange1, bid1, arbitrageBuyAtExchange2SellAtExchange1));
             hasArbitrage = true;
         }
         
+        // 套利方向2: 在币安买入，在火币卖出
         if (arbitrageBuyAtExchange1SellAtExchange2 > 0.1) {
-            System.out.println(String.format("\n套利机会: 在 %s 买入, 在 %s 卖出, 利润: %.4f%%", 
-                    exchange1, exchange2, arbitrageBuyAtExchange1SellAtExchange2));
+            System.out.println(String.format("套利机会: 在 %s(%.2f) 买入, 在 %s(%.2f) 卖出, 利润: %.4f%%", 
+                    exchange1, ask1, exchange2, bid2, arbitrageBuyAtExchange1SellAtExchange2));
             hasArbitrage = true;
         }
         
-        long currentTime = System.currentTimeMillis();
-        if (!hasArbitrage && (currentTime - lastPrintTime > PRINT_INTERVAL)) {
-            System.out.println("\n暂无利差，继续监控中...");
-            lastPrintTime = currentTime;
+        if (!hasArbitrage) {
+            System.out.println("\n当前无显著套利机会，继续监控中...");
         }
         
-        System.out.println("=================\n");
+        // 显示价格差
+        double priceDiff = Math.abs(bid1 - bid2);
+        double priceDiffPercent = priceDiff / Math.min(bid1, bid2) * 100;
+        System.out.println(String.format("\n价格差异: %.4f (%.4f%%)", priceDiff, priceDiffPercent));
+        
+        System.out.println("==========================================\n");
     }
 }

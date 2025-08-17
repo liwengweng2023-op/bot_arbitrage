@@ -92,31 +92,6 @@ public class Controller {
      */
 
     public void runBot() throws IOException, InterruptedException, EmailLimitException, WaitTimeException, ExchangeDataException{
-        if (useMockData) {
-            System.out.println("\n=== 交易所套利信息 ===");
-            System.out.println("【币安 Binance】");
-            System.out.println("  ETH/USDT 买一价: 1800.00");
-            System.out.println("  ETH/USDT 卖一价: 1801.50");
-            System.out.println("  24小时交易量: 25,000 ETH");
-            
-            System.out.println("\n【火币 Huobi】");
-            System.out.println("  ETH/USDT 买一价: 1799.80");
-            System.out.println("  ETH/USDT 卖一价: 1801.20");
-            System.out.println("  24小时交易量: 28,500 ETH");
-            
-            System.out.println("\n=== 套利机会分析 ===");
-            System.out.println("  最佳买入价: 火币 1799.80 USDT");
-            System.out.println("  最佳卖出价: 币安 1801.50 USDT");
-            System.out.println("  理论套利空间: 0.09% (1.7 USDT)");
-            System.out.println("  考虑手续费后收益: 0.04% (0.7 USDT)");
-            
-            System.out.println("\n=== 风险提示 ===");
-            System.out.println("  1. 以上数据为模拟数据，仅供参考");
-            System.out.println("  2. 实际交易请考虑滑点和市场波动风险");
-            System.out.println("  3. 建议套利空间大于0.5%再执行交易");
-            System.out.println("\n=== 模拟数据模式结束 ===\n");
-            return;
-        }
 
         // 真实数据模式
         ArrayList<ExchangeSpecs> ExchangeList = new ArrayList<>();
