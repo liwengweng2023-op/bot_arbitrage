@@ -5,206 +5,251 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.java_websocket.handshake.ServerHandshake;
 import org.springframework.stereotype.Service;
-import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
 import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
 import java.util.zip.GZIPInputStream;
+import java.util.Date;
 
 @Service
 public class RealTimeArbitrageService {
+    // ANSI color codes for console output
+    private static final String ANSI_RESET = "\u001B[0m";
+    private static final String ANSI_RED = "\u001B[31m";
+    private static final String ANSI_GREEN = "\u001B[32m";
+    private static final String ANSI_YELLOW = "\u001B[33m";
+    private static final String ANSI_CYAN = "\u001B[36m";
+    private static final String ANSI_PURPLE = "\u001B[35m";
+    private static final String ANSI_BOLD = "\u001B[1m";
+    
+    // Configuration constants
+    private static final String SYMBOL = "ethusdt";
+    private static final long PRICE_EXPIRY_MS = 5000; // 5 seconds
+    private static final long INITIAL_MAX_TIMESTAMP_DIFF_MS = 300; // 300ms
+    private static final long STATS_PRINT_INTERVAL_MS = 60000; // 1 minute
+    private static final double MIN_ARBITRAGE_MARGIN = 0.03; // 0.03%
+    private static final int CONNECTION_TIMEOUT_MS = 60_000; // 60 seconds
+    private static final int RECONNECT_DELAY_MS = 5000; // 5 seconds
+    
+    // State management
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Map<String, Map<String, Double>> exchangePrices = new ConcurrentHashMap<>();
-    private static final String SYMBOL = "ethusdt";
+    private final Map<String, Long> lastUpdateTime = new ConcurrentHashMap<>();
+    private volatile long dynamicMaxTimestampDiffMs = INITIAL_MAX_TIMESTAMP_DIFF_MS;
     
+    // Performance metrics
+    private final AtomicInteger checkCount = new AtomicInteger(0);
+    private final AtomicInteger skippedOpportunities = new AtomicInteger(0);
+    private final AtomicInteger processedOpportunities = new AtomicInteger(0);
+    private volatile long lastStatsPrintTime = System.currentTimeMillis();
+    
+    // WebSocket clients
     private ExchangeWebSocketClient binanceClient;
     private ExchangeWebSocketClient huobiClient;
     
-    @PostConstruct
+    // WebSocket client implementation for Binance
+    private class BinanceWebSocketClient extends ExchangeWebSocketClient {
+        public BinanceWebSocketClient(URI serverUri) {
+            super("币安", serverUri, message -> {
+                if (message instanceof String) {
+                    handleBinanceMessage((String) message);
+                } else if (message instanceof byte[]) {
+                    try {
+                        String decompressed = RealTimeArbitrageService.this.decompressGzip((byte[]) message);
+                        if (!decompressed.isEmpty()) {
+                            handleBinanceMessage(decompressed);
+                        }
+                    } catch (Exception e) {
+                        System.err.println(ANSI_RED + "[Binance] 处理二进制消息时出错: " + e.getMessage() + ANSI_RESET);
+                    }
+                }
+            });
+            
+            // Set connection timeout
+            this.setConnectionLostTimeout(60); // 60 seconds
+        }
+        
+        private void handleBinanceMessage(String message) {
+            try {
+                JsonNode jsonNode = objectMapper.readTree(message);
+                double bestBid = jsonNode.get("b").asDouble();  // 买一价
+                double bestAsk = jsonNode.get("a").asDouble();  // 卖一价
+                
+                updatePrice("币安", bestBid, bestAsk);
+                checkArbitrageOpportunity();
+            } catch (Exception e) {
+                System.err.println(ANSI_RED + "[Binance] 处理消息时出错: " + e.getMessage() + ANSI_RESET);
+                e.printStackTrace();
+            }
+        }
+
+        @Override
+        public void onOpen(ServerHandshake handshakedata) {
+            super.onOpen(handshakedata);
+            System.out.println(ANSI_GREEN + "[Binance] 连接已建立，开始接收数据..." + ANSI_RESET);
+        }
+    }
+
+    // WebSocket client implementation for Huobi
+    private class HuobiWebSocketClient extends ExchangeWebSocketClient {
+        private Timer pingTimer;
+        private final Object pingLock = new Object();
+
+        public HuobiWebSocketClient(URI serverUri) {
+            super("火币", serverUri, message -> {
+                if (message instanceof byte[]) {
+                    handleHuobiMessage((byte[]) message);
+                } else if (message instanceof String) {
+                    System.out.println(ANSI_CYAN + "[Huobi] 收到文本消息: " + message + ANSI_RESET);
+                }
+            });
+            
+            // Set connection timeout
+            this.setConnectionLostTimeout(60); // 60 seconds
+        }
+
+        @Override
+        public void onOpen(ServerHandshake handshakedata) {
+            super.onOpen(handshakedata);
+            System.out.println(ANSI_GREEN + "[Huobi] 连接已建立，发送订阅请求..." + ANSI_RESET);
+            
+            // 发送订阅消息
+            String subscribeMsg = String.format("{\"sub\":\"market.%s.bbo\",\"id\":\"%d\"}", 
+                SYMBOL, System.currentTimeMillis());
+            this.send(subscribeMsg);
+            
+            // 启动Ping定时器
+            startPingTimer();
+        }
+
+        @Override
+        public void onClose(int code, String reason, boolean remote) {
+            System.out.println(ANSI_YELLOW + "[Huobi] 连接已关闭: " + reason + " (code: " + code + ")" + ANSI_RESET);
+            stopPingTimer();
+            super.onClose(code, reason, remote);
+            
+            // 异步重连
+            new Thread(() -> {
+                try {
+                    System.out.println(ANSI_CYAN + "[Huobi] 5秒后尝试重新连接..." + ANSI_RESET);
+                    Thread.sleep(5000);
+                    System.out.println(ANSI_CYAN + "[Huobi] 正在重新连接..." + ANSI_RESET);
+                    this.reconnectBlocking();
+                    System.out.println(ANSI_GREEN + "[Huobi] 重新连接成功" + ANSI_RESET);
+                } catch (Exception e) {
+                    System.err.println(ANSI_RED + "[Huobi] 重连失败: " + e.getMessage() + ANSI_RESET);
+                    this.onClose(code, reason, remote);
+                }
+            }).start();
+        }
+
+        @Override
+        public void onError(Exception ex) {
+            System.err.println(ANSI_RED + "[Huobi] 连接错误: " + ex.getMessage() + ANSI_RESET);
+            ex.printStackTrace();
+            stopPingTimer();
+            super.onError(ex);
+        }
+
+        private void startPingTimer() {
+            stopPingTimer();
+            synchronized (pingLock) {
+                pingTimer = new Timer("Huobi-Ping-Timer", true);
+                pingTimer.scheduleAtFixedRate(new TimerTask() {
+                    @Override
+                    public void run() {
+                        if (isOpen()) {
+                            try {
+                                String pingMsg = "{\"ping\":" + System.currentTimeMillis() + "}";
+                                send(pingMsg);
+                                System.out.println(ANSI_CYAN + "[Huobi] 发送Ping..." + ANSI_RESET);
+                            } catch (Exception e) {
+                                System.err.println(ANSI_RED + "[Huobi] 发送Ping失败: " + e.getMessage() + ANSI_RESET);
+                                reconnect();
+                            }
+                        }
+                    }
+                }, 10000, 20000);
+            }
+        }
+
+        private void stopPingTimer() {
+            synchronized (pingLock) {
+                if (pingTimer != null) {
+                    pingTimer.cancel();
+                    pingTimer = null;
+                }
+            }
+        }
+    }
+
+    @javax.annotation.PostConstruct
     public void init() {
         try {
-            // 初始化币安WebSocket连接
             String binanceWsUrl = "wss://stream.binance.com:9443/ws/" + SYMBOL + "@ticker";
-            binanceClient = new ExchangeWebSocketClient(
-                    "币安",
-                    new URI(binanceWsUrl),
-                    message -> {
-                        if (message instanceof String) {
-                            handleBinanceMessage((String) message);
-                        } else if (message instanceof byte[]) {
-                            // 币安不使用GZIP压缩，但为了安全起见处理一下
-                            try {
-                                String decompressed = decompressGzip((byte[]) message);
-                                if (!decompressed.isEmpty()) {
-                                    handleBinanceMessage(decompressed);
-                                }
-                            } catch (Exception e) {
-                                System.err.println("处理币安二进制消息时出错: " + e.getMessage());
-                            }
-                        }
-                    }
-            ) {
-                @Override
-                public void onOpen(ServerHandshake handshakedata) {
-                    super.onOpen(handshakedata);
-                    System.out.println("[" + getExchangeName() + "] 连接已建立，开始接收数据...");
-                }
-            };
+            binanceClient = new BinanceWebSocketClient(new URI(binanceWsUrl));
             binanceClient.connect();
             
-            // 初始化火币WebSocket连接 - 使用主站API地址
             String huobiWsUrl = "wss://api.huobi.pro/ws";
-            huobiClient = new ExchangeWebSocketClient(
-                    "火币",
-                    new URI(huobiWsUrl),
-                    message -> {
-                        if (message instanceof byte[]) {
-                            // 火币使用GZIP压缩
-                            handleHuobiMessage((byte[]) message);
-                        } else if (message instanceof String) {
-                            // 处理文本消息（如Pong响应）
-                            String msg = (String) message;
-                            System.out.println("\n[火币] 收到文本消息: " + msg);
-                        }
-                    }
-            ) {
-                private Timer pingTimer;
-                
-                @Override
-                public void onOpen(ServerHandshake handshakedata) {
-                    super.onOpen(handshakedata);
-                    System.out.println("[" + getExchangeName() + "] 连接已建立，发送订阅请求...");
-                    
-                    // 发送订阅消息 - 使用bbo（最优买一卖一）频道
-                    String subscribeMsg = String.format("{\"sub\":\"market.%s.bbo\",\"id\":\"%d\"}", 
-                        SYMBOL, System.currentTimeMillis());
-                    send(subscribeMsg);
-                    
-                    // 启动定时发送Ping消息
-                    startPingTimer();
-                }
-                
-                @Override
-                public void onClose(int code, String reason, boolean remote) {
-                    System.out.println("[" + getExchangeName() + "] 连接已关闭: " + reason + " (code: " + code + ")");
-                    stopPingTimer();
-                    super.onClose(code, reason, remote);
-                    
-                    // 使用线程池进行异步重连，避免阻塞
-                    new Thread(() -> {
-                        try {
-                            System.out.println("[" + getExchangeName() + "] 5秒后尝试重新连接...");
-                            Thread.sleep(5000);
-                            System.out.println("[" + getExchangeName() + "] 正在重新连接...");
-                            reconnectBlocking();
-                            System.out.println("[" + getExchangeName() + "] 重新连接成功");
-                        } catch (Exception e) {
-                            System.err.println("[" + getExchangeName() + "] 重连失败: " + e.getMessage());
-                            // 如果重连失败，继续尝试
-                            onClose(code, reason, remote);
-                        }
-                    }).start();
-                }
-                
-                @Override
-                public void onError(Exception ex) {
-                    System.err.println("[" + getExchangeName() + "] 连接错误: " + ex.getMessage());
-                    ex.printStackTrace();
-                    stopPingTimer();
-                    super.onError(ex);
-                }
-                
-                private void startPingTimer() {
-                    stopPingTimer();
-                    pingTimer = new Timer("Huobi-Ping-Timer", true);
-                    pingTimer.scheduleAtFixedRate(new TimerTask() {
-                        @Override
-                        public void run() {
-                            if (isOpen()) {
-                                try {
-                                    String pingMsg = "{\"ping\":" + System.currentTimeMillis() + "}";
-                                    send(pingMsg);
-                                    System.out.println("[" + getExchangeName() + "] 发送Ping...");
-                                } catch (Exception e) {
-                                    System.err.println("[" + getExchangeName() + "] 发送Ping失败: " + e.getMessage());
-                                    // 如果发送Ping失败，尝试重新连接
-                                    reconnect();
-                                }
-                            }
-                        }
-                    }, 10000, 20000); // 初始延迟10秒，之后每20秒发送一次Ping
-                }
-                
-                private void stopPingTimer() {
-                    if (pingTimer != null) {
-                        pingTimer.cancel();
-                        pingTimer = null;
-                    }
-                }
-            };
-            
-            // 设置连接超时
-            huobiClient.setConnectionLostTimeout(60); // 60秒连接超时
-            
+            huobiClient = new HuobiWebSocketClient(new URI(huobiWsUrl));
             huobiClient.connect();
             
-            // 添加关闭钩子，确保程序退出时关闭连接
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                if (binanceClient != null) {
-                    binanceClient.close();
-                }
-                if (huobiClient != null) {
-                    huobiClient.close();
-                }
-            }));
+            Runtime.getRuntime().addShutdownHook(new Thread(this::cleanup));
             
+            System.out.println(ANSI_GREEN + "[系统] 套利服务已启动，开始监控 " + SYMBOL.toUpperCase() + " 交易对..." + ANSI_RESET);
         } catch (Exception e) {
-            System.err.println("初始化WebSocket连接时出错: " + e.getMessage());
+            System.err.println(ANSI_RED + "[系统] 初始化WebSocket连接时出错: " + e.getMessage() + ANSI_RESET);
             e.printStackTrace();
         }
     }
     
-    private void handleBinanceMessage(String message) {
+    @PreDestroy
+    public void cleanup() {
+        System.out.println(ANSI_YELLOW + "[系统] 正在关闭套利服务..." + ANSI_RESET);
         try {
-            // 打印原始消息
-            System.out.println("\n[币安] 收到消息: " + message);
+            if (binanceClient != null) {
+                binanceClient.close();
+                System.out.println(ANSI_YELLOW + "[币安] 连接已关闭" + ANSI_RESET);
+            }
+            if (huobiClient != null) {
+                huobiClient.close();
+                System.out.println(ANSI_YELLOW + "[火币] 连接已关闭" + ANSI_RESET);
+            }
             
-            JsonNode jsonNode = objectMapper.readTree(message);
-            double bestBid = jsonNode.get("b").asDouble();  // 买一价
-            double bestAsk = jsonNode.get("a").asDouble();  // 卖一价
+            // 打印最终统计信息
+            printStats();
             
-            updatePrice("币安", bestBid, bestAsk);
-            checkArbitrageOpportunity();
         } catch (Exception e) {
-            System.err.println("处理币安消息错误: " + e.getMessage());
+            System.err.println(ANSI_RED + "[系统] 关闭WebSocket连接时出错: " + e.getMessage() + ANSI_RESET);
+            e.printStackTrace();
         }
     }
     
-    private String decompressGzip(byte[] compressed) throws Exception {
+    private String decompressGzip(byte[] compressed) {
         if (compressed == null || compressed.length == 0) {
             return "";
         }
         
-        ByteArrayInputStream bis = new ByteArrayInputStream(compressed);
-        GZIPInputStream gzip = new GZIPInputStream(bis);
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        
-        byte[] buffer = new byte[1024];
-        int len;
-        while ((len = gzip.read(buffer)) > 0) {
-            baos.write(buffer, 0, len);
+        try (ByteArrayInputStream bis = new ByteArrayInputStream(compressed);
+             GZIPInputStream gzipIn = new GZIPInputStream(bis);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            
+            byte[] buffer = new byte[1024];
+            int len;
+            while ((len = gzipIn.read(buffer)) > 0) {
+                out.write(buffer, 0, len);
+            }
+            return out.toString("UTF-8");
+        } catch (IOException e) {
+            System.err.println(ANSI_RED + "解压GZIP数据时出错: " + e.getMessage() + ANSI_RESET);
+            return "";
         }
-        
-        gzip.close();
-        baos.close();
-        
-        return baos.toString("UTF-8");
     }
     
     private void handleHuobiMessage(byte[] message) {
@@ -212,8 +257,10 @@ public class RealTimeArbitrageService {
             // 先尝试解压GZIP
             String decompressedMessage = decompressGzip(message);
             
-            // 打印原始消息
-            System.out.println("\n[火币] 收到消息: " + decompressedMessage);
+            // 处理解压后的消息
+            if (decompressedMessage == null || decompressedMessage.isEmpty()) {
+                return;
+            }
             
             // 处理Pong响应
             if (decompressedMessage.contains("pong")) {
@@ -227,16 +274,8 @@ public class RealTimeArbitrageService {
                 return;
             }
             
+            // 解析JSON
             JsonNode jsonNode = objectMapper.readTree(decompressedMessage);
-            
-            // 处理Ping响应
-            if (jsonNode.has("ping")) {
-                long pingValue = jsonNode.get("ping").asLong();
-                String pongMsg = String.format("{\"pong\":%d}", pingValue);
-                huobiClient.send(pongMsg);
-                System.out.println("[火币] 响应Ping: " + pongMsg);
-                return;
-            }
             
             // 处理行情数据
             if (jsonNode.has("ch") && jsonNode.has("tick")) {
@@ -253,45 +292,18 @@ public class RealTimeArbitrageService {
                 }
             }
         } catch (Exception e) {
-            System.err.println("处理火币消息错误: " + e.getMessage());
+            System.err.println(ANSI_RED + "[Huobi] 处理消息时出错: " + e.getMessage() + ANSI_RESET);
             e.printStackTrace();
         }
     }
-    
-    private final Map<String, Long> lastUpdateTime = new ConcurrentHashMap<>();
-    private static final long PRICE_EXPIRY_MS = 5000; // 5秒价格过期时间
-    private static final long PRINT_INTERVAL = 5000; // 5秒打印一次无套利信息
-    private long lastPrintTime = 0;
-    
-    private synchronized void updatePrice(String exchange, double bid, double ask) {
-        Map<String, Double> prices = new HashMap<>();
-        prices.put("bid", bid);
-        prices.put("ask", ask);
-        exchangePrices.put(exchange, prices);
-        lastUpdateTime.put(exchange, System.currentTimeMillis());
-    }
-    
-    private String formatTime(long timestamp) {
-        return new java.text.SimpleDateFormat("HH:mm:ss.SSS").format(new java.util.Date(timestamp));
-    }
-    
-    private synchronized void checkArbitrageOpportunity() {
+
+    private void checkArbitrageOpportunity() {
         if (exchangePrices.size() < 2) return;
         
         String exchange1 = "币安";
         String exchange2 = "火币";
         
-        // 检查数据是否过期
-        long currentTime = System.currentTimeMillis();
-        Long lastUpdate1 = lastUpdateTime.get(exchange1);
-        Long lastUpdate2 = lastUpdateTime.get(exchange2);
-        
-        if (lastUpdate1 == null || lastUpdate2 == null || 
-            currentTime - lastUpdate1 > PRICE_EXPIRY_MS || 
-            currentTime - lastUpdate2 > PRICE_EXPIRY_MS) {
-            return; // 数据已过期，不计算套利机会
-        }
-        
+        // 获取两个交易所的最新价格
         Map<String, Double> prices1 = exchangePrices.get(exchange1);
         Map<String, Double> prices2 = exchangePrices.get(exchange2);
         
@@ -303,41 +315,138 @@ public class RealTimeArbitrageService {
         double ask2 = prices2.get("ask");
         
         // 计算套利机会
+        calculateArbitrage(exchange1, exchange2, bid1, ask1, bid2, ask2);
+        
+        // 更新检查计数
+        checkCount.incrementAndGet();
+        
+        // 定期打印统计信息
+        printStats();
+    }
+
+    private void calculateArbitrage(String exchange1, String exchange2, 
+                                  double bid1, double ask1, double bid2, double ask2) {
+        // 计算套利机会（百分比）
         double arbitrageBuyAtExchange2SellAtExchange1 = (bid1 - ask2) / ask2 * 100;
         double arbitrageBuyAtExchange1SellAtExchange2 = (bid2 - ask1) / ask1 * 100;
         
-        boolean hasArbitrage = false;
+        // 检查是否有套利机会
+        if (arbitrageBuyAtExchange2SellAtExchange1 > MIN_ARBITRAGE_MARGIN) {
+            System.out.println(String.format("%s[套利机会] 在 %s 买入，在 %s 卖出: %.4f%%%s",
+                ANSI_GREEN, exchange2, exchange1, 
+                arbitrageBuyAtExchange2SellAtExchange1, ANSI_RESET));
+            processedOpportunities.incrementAndGet();
+        } else if (arbitrageBuyAtExchange1SellAtExchange2 > MIN_ARBITRAGE_MARGIN) {
+            System.out.println(String.format("%s[套利机会] 在 %s 买入，在 %s 卖出: %.4f%%%s",
+                ANSI_GREEN, exchange1, exchange2, 
+                arbitrageBuyAtExchange1SellAtExchange2, ANSI_RESET));
+            processedOpportunities.incrementAndGet();
+        } else {
+            // 没有套利机会
+            skippedOpportunities.incrementAndGet();
+        }
+    }
+
+    private void updatePrice(String exchange, double bid, double ask) {
+        long currentTime = System.currentTimeMillis();
         
-        // 打印套利机会
-        System.out.println("\n=== 实时套利机会 (" + formatTime(currentTime) + ") ===");
-        System.out.println(String.format("[%s] 时间: %s  买一价: %.2f  卖一价: %.2f", 
-            exchange1, formatTime(lastUpdate1), bid1, ask1));
-        System.out.println(String.format("[%s] 时间: %s  买一价: %.2f  卖一价: %.2f", 
-            exchange2, formatTime(lastUpdate2), bid2, ask2));
+        // 更新价格数据
+        Map<String, Double> prices = new HashMap<>();
+        prices.put("bid", bid);
+        prices.put("ask", ask);
+        exchangePrices.put(exchange, prices);
+        lastUpdateTime.put(exchange, currentTime);
         
-        // 套利方向1: 在火币买入，在币安卖出
-        if (arbitrageBuyAtExchange2SellAtExchange1 > 0.1) {
-            System.out.println(String.format("\n套利机会: 在 %s(%.2f) 买入, 在 %s(%.2f) 卖出, 利润: %.4f%%", 
-                    exchange2, ask2, exchange1, bid1, arbitrageBuyAtExchange2SellAtExchange1));
-            hasArbitrage = true;
+        // 如果有至少两个交易所的数据，检查时间差
+        if (exchangePrices.size() >= 2) {
+            // 获取所有交易所的更新时间
+            List<Long> updateTimes = new ArrayList<>(lastUpdateTime.values());
+            long maxTime = Collections.max(updateTimes);
+            long minTime = Collections.min(updateTimes);
+            long timeDiff = maxTime - minTime;
+            
+            // 更新动态阈值
+            updateDynamicThreshold(timeDiff);
+            
+            // 如果时间差超过动态阈值，记录警告
+            if (timeDiff > dynamicMaxTimestampDiffMs) {
+                System.out.println(ANSI_YELLOW + String.format("[警告] 交易所数据时间差过大: %dms (阈值: %dms)", 
+                    timeDiff, dynamicMaxTimestampDiffMs) + ANSI_RESET);
+            }
+        }
+    }
+
+    private void updateDynamicThreshold(long timeDiff) {
+        if (timeDiff < 0) return; // invalid time difference
+        
+        synchronized (recentTimeDiffs) {
+            // add current time difference to history
+            recentTimeDiffs.add(timeDiff);
+            
+            // keep recent N samples
+            while (recentTimeDiffs.size() > TIME_DIFF_SAMPLES) {
+                recentTimeDiffs.remove(0);
+            }
+            
+            if (!recentTimeDiffs.isEmpty()) {
+                // calculate moving average time difference
+                double avgDiff = recentTimeDiffs.stream()
+                    .mapToLong(Long::longValue)
+                    .average()
+                    .orElse(INITIAL_MAX_TIMESTAMP_DIFF_MS);
+                
+                // calculate standard deviation for dynamic adjustment
+                double stdDev = Math.sqrt(recentTimeDiffs.stream()
+                    .mapToDouble(d -> Math.pow(d - avgDiff, 2))
+                    .average()
+                    .orElse(0));
+                
+                // dynamically adjust threshold considering network fluctuations
+                double dynamicMultiplier = TIME_DIFF_THRESHOLD_MULTIPLIER * (1 + stdDev / (avgDiff + 1));
+                dynamicMultiplier = Math.min(dynamicMultiplier, 3.0); // set maximum multiplier limit
+                
+                // update dynamic threshold, ensuring it's not lower than the initial value
+                dynamicMaxTimestampDiffMs = Math.max(
+                    INITIAL_MAX_TIMESTAMP_DIFF_MS,
+                    (long)(avgDiff * dynamicMultiplier)
+                );
+                
+                // log threshold adjustment information (for debugging)
+                if (checkCount.get() % 100 == 0) {
+                    System.out.println(String.format("[%s时间同步%s] 平均时差: %.2fms | 标准差: %.2f | 动态乘数: %.2f | 新阈值: %dms",
+                        ANSI_CYAN, ANSI_RESET, avgDiff, stdDev, dynamicMultiplier, dynamicMaxTimestampDiffMs));
+                }
+            }
+        }
+    }
+
+    private void printStats() {
+        long now = System.currentTimeMillis();
+        if (now - lastStatsPrintTime > STATS_PRINT_INTERVAL_MS) {
+            int totalChecks = checkCount.get();
+            int skipped = skippedOpportunities.get();
+            int processed = processedOpportunities.get();
+            double skipRate = totalChecks > 0 ? (double)skipped / totalChecks * 100 : 0;
+            
+            System.out.println(String.format("\n%s[统计] 检查次数: %d | 处理: %d | 跳过: %d (%.1f%%) | 动态时间差阈值: %dms%s",
+                ANSI_PURPLE, totalChecks, processed, skipped, skipRate, dynamicMaxTimestampDiffMs, ANSI_RESET));
+                
+            lastStatsPrintTime = now;
+        }
+    }
+    
+    private String formatTime(long timestamp) {
+        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").format(new Date(timestamp));
+    }
+    
+    private long getTimeDiff(String exchange1, String exchange2) {
+        Long time1 = lastUpdateTime.get(exchange1);
+        Long time2 = lastUpdateTime.get(exchange2);
+        
+        if (time1 == null || time2 == null) {
+            return Long.MAX_VALUE;
         }
         
-        // 套利方向2: 在币安买入，在火币卖出
-        if (arbitrageBuyAtExchange1SellAtExchange2 > 0.1) {
-            System.out.println(String.format("套利机会: 在 %s(%.2f) 买入, 在 %s(%.2f) 卖出, 利润: %.4f%%", 
-                    exchange1, ask1, exchange2, bid2, arbitrageBuyAtExchange1SellAtExchange2));
-            hasArbitrage = true;
-        }
-        
-        if (!hasArbitrage) {
-            System.out.println("\n当前无显著套利机会，继续监控中...");
-        }
-        
-        // 显示价格差
-        double priceDiff = Math.abs(bid1 - bid2);
-        double priceDiffPercent = priceDiff / Math.min(bid1, bid2) * 100;
-        System.out.println(String.format("\n价格差异: %.4f (%.4f%%)", priceDiff, priceDiffPercent));
-        
-        System.out.println("==========================================\n");
+        return Math.abs(time1 - time2);
     }
 }
