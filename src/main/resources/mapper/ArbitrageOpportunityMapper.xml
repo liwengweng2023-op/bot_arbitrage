@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="co.codingnomads.bot.arbitrage.mapper.ArbitrageOpportunityMapper">
+    <resultMap id="ArbitrageOpportunityResultMap" type="co.codingnomads.bot.arbitrage.model.ArbitrageOpportunity">
+        <id column="id" property="id"/>
+        <result column="symbol" property="symbol"/>
+        <result column="buy_exchange" property="buyExchange"/>
+        <result column="sell_exchange" property="sellExchange"/>
+        <result column="buy_price" property="buyPrice"/>
+        <result column="sell_price" property="sellPrice"/>
+        <result column="profit_margin" property="profitMargin"/>
+        <result column="profit_amount" property="profitAmount"/>
+        <result column="detected_at" property="detectedAt"/>
+    </resultMap>
+</mapper>

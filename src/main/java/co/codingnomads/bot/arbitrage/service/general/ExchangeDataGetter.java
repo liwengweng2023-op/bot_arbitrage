@@ -2,7 +2,7 @@ package co.codingnomads.bot.arbitrage.service.general;
 
 import co.codingnomads.bot.arbitrage.model.exchange.ActivatedExchange;
 import co.codingnomads.bot.arbitrage.model.ticker.TickerData;
-import co.codingnomads.bot.arbitrage.service.thread.GetTickerDataThread;
+// import co.codingnomads.bot.arbitrage.service.thread.GetTickerDataThread; // 已删除
 import org.knowm.xchange.Exchange;
 import org.knowm.xchange.currency.CurrencyPair;
 import org.knowm.xchange.dto.marketdata.Ticker;
@@ -39,23 +39,18 @@ public class ExchangeDataGetter {
         ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
         CompletionService<TickerData> pool = new ExecutorCompletionService<>(executor);
 
-        //for each activated exchange submit into the executor pool
-        for (ActivatedExchange activatedExchange : activatedExchanges) {
-            if (activatedExchange.isActivated()) {
-                GetTickerDataThread temp = new GetTickerDataThread(activatedExchange, currencyPair, tradeValueBase);
-                pool.submit(temp);
-            }
-        }
-        //for each activated exchange if it is activated take from the executor pool and return those activated exchanges
+        // 简化版本：直接获取数据，不使用线程池
         for (ActivatedExchange activatedExchange : activatedExchanges) {
             if (activatedExchange.isActivated()) {
                 try {
-                    TickerData tickerData = pool.take().get();
-                    if (null != tickerData) {
+                    Ticker ticker = activatedExchange.getExchange().getMarketDataService().getTicker(currencyPair);
+                    if (ticker != null) {
+                        TickerData tickerData = new TickerData(currencyPair, activatedExchange.getExchange(), 
+                            ticker.getBid(), ticker.getAsk());
                         list.add(tickerData);
                     }
-                } catch (InterruptedException | ExecutionException e) {
-                    e.printStackTrace();
+                } catch (Exception e) {
+                    System.err.println("获取交易所数据失败: " + e.getMessage());
                 }
             }
         }

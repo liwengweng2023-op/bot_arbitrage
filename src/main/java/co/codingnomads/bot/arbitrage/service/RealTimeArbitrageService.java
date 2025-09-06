@@ -1,11 +1,14 @@
 package co.codingnomads.bot.arbitrage.service;
 
 import co.codingnomads.bot.arbitrage.exchange.ExchangeWebSocketClient;
+import co.codingnomads.bot.arbitrage.model.MarketData;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.java_websocket.handshake.ServerHandshake;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import javax.annotation.PreDestroy;
+import java.math.BigDecimal;
 import java.net.URI;
 import java.util.*;
 import java.util.concurrent.*;
@@ -20,6 +23,13 @@ import java.util.Date;
 
 @Service
 public class RealTimeArbitrageService {
+    
+    @Autowired
+    private MarketDataService marketDataService;
+    
+    @Autowired
+    private ArbitrageService arbitrageService;
+    
     // ANSI color codes for console output
     private static final String ANSI_RESET = "\u001B[0m";
     private static final String ANSI_RED = "\u001B[31m";
@@ -355,25 +365,17 @@ public class RealTimeArbitrageService {
 
     private void calculateArbitrage(String exchange1, String exchange2, 
                                   double bid1, double ask1, double bid2, double ask2) {
-        // 计算套利机会（百分比）
-        double arbitrageBuyAtExchange2SellAtExchange1 = (bid1 - ask2) / ask2 * 100;
-        double arbitrageBuyAtExchange1SellAtExchange2 = (bid2 - ask1) / ask1 * 100;
+        // 使用ArbitrageService进行套利检测
+        arbitrageService.checkArbitrageOpportunity(
+            SYMBOL.toUpperCase(),
+            exchange1, exchange2,
+            BigDecimal.valueOf(bid1), BigDecimal.valueOf(ask1),
+            BigDecimal.valueOf(bid2), BigDecimal.valueOf(ask2),
+            MIN_ARBITRAGE_MARGIN
+        );
         
-        // 检查是否有套利机会
-        if (arbitrageBuyAtExchange2SellAtExchange1 > MIN_ARBITRAGE_MARGIN) {
-            System.out.println(String.format("%s[套利机会] 在 %s 买入，在 %s 卖出: %.4f%%%s",
-                ANSI_GREEN, exchange2, exchange1, 
-                arbitrageBuyAtExchange2SellAtExchange1, ANSI_RESET));
-            processedOpportunities.incrementAndGet();
-        } else if (arbitrageBuyAtExchange1SellAtExchange2 > MIN_ARBITRAGE_MARGIN) {
-            System.out.println(String.format("%s[套利机会] 在 %s 买入，在 %s 卖出: %.4f%%%s",
-                ANSI_GREEN, exchange1, exchange2, 
-                arbitrageBuyAtExchange1SellAtExchange2, ANSI_RESET));
-            processedOpportunities.incrementAndGet();
-        } else {
-            // 没有套利机会
-            skippedOpportunities.incrementAndGet();
-        }
+        // 更新统计信息
+        processedOpportunities.incrementAndGet();
     }
 
     private void updatePrice(String exchange, double bid, double ask) {
@@ -385,6 +387,16 @@ public class RealTimeArbitrageService {
         prices.put("ask", ask);
         exchangePrices.put(exchange, prices);
         lastUpdateTime.put(exchange, currentTime);
+        
+        // 保存到数据库
+        MarketData marketData = new MarketData(
+            exchange, 
+            SYMBOL.toUpperCase(), 
+            BigDecimal.valueOf(bid), 
+            BigDecimal.valueOf(ask), 
+            currentTime
+        );
+        marketDataService.saveMarketData(marketData);
         
         // 如果有至少两个交易所的数据，检查时间差
         if (exchangePrices.size() >= 2) {
@@ -477,5 +489,12 @@ public class RealTimeArbitrageService {
         }
         
         return Math.abs(time1 - time2);
+    }
+    
+    /**
+     * 启动套利监控服务
+     */
+    public void startArbitrageMonitoring() {
+        System.out.println(ANSI_GREEN + "[系统] 套利监控服务已启动，等待WebSocket连接..." + ANSI_RESET);
     }
 }
