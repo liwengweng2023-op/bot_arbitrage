@@ -197,7 +197,11 @@ public class ArbitrageService {
      */
     public List<ArbitrageOpportunity> getLatestOpportunities(String symbol, int limit) {
         try {
-            return arbitrageMapper.getLatestOpportunities(symbol, limit);
+            if (symbol == null || symbol.trim().isEmpty()) {
+                return arbitrageMapper.getAllLatestOpportunities(limit);
+            } else {
+                return arbitrageMapper.getLatestOpportunities(symbol, limit);
+            }
         } catch (Exception e) {
             logError("获取最新套利机会失败", e);
             return new java.util.ArrayList<>(); // 返回空列表而不是null

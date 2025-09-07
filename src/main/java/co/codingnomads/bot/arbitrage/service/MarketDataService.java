@@ -96,7 +96,11 @@ public class MarketDataService {
      */
     public int getTodayDataCount(String exchange) {
         try {
-            return marketDataMapper.getTodayDataCount(exchange);
+            if (exchange == null || exchange.trim().isEmpty()) {
+                return marketDataMapper.getAllTodayDataCount();
+            } else {
+                return marketDataMapper.getTodayDataCount(exchange);
+            }
         } catch (Exception e) {
             logError("获取今日数据统计失败", e);
             return 0;

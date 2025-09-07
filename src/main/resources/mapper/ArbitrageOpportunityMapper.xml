@@ -14,30 +14,6 @@
         <result column="detected_at" property="detectedAt"/>
     </resultMap>
 
-    <!-- 插入套利机会 -->
-    <insert id="insertArbitrageOpportunity" parameterType="co.codingnomads.bot.arbitrage.model.ArbitrageOpportunity" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO arbitrage_opportunities (symbol, buy_exchange, sell_exchange, buy_price, sell_price, profit_margin, profit_amount, detected_at)
-        VALUES (#{symbol}, #{buyExchange}, #{sellExchange}, #{buyPrice}, #{sellPrice}, #{profitMargin}, #{profitAmount}, #{detectedAt})
-    </insert>
-
-    <!-- 获取最新的套利机会 -->
-    <select id="getLatestOpportunities" resultMap="ArbitrageOpportunityResultMap">
-        SELECT * FROM arbitrage_opportunities
-        <where>
-            <if test="symbol != null and symbol != ''">
-                AND symbol = #{symbol}
-            </if>
-        </where>
-        ORDER BY detected_at DESC
-        <if test="limit > 0">
-            LIMIT #{limit}
-        </if>
-    </select>
-
-    <!-- 获取今日套利机会统计 -->
-    <select id="getTodayOpportunityCount" resultType="int">
-        SELECT COUNT(*) FROM arbitrage_opportunities
-        WHERE DATE(detected_at) = CURDATE()
-    </select>
+    <!-- 所有SQL映射都通过注解方式定义在Java接口中 -->
 
 </mapper>

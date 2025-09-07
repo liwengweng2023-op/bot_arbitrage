@@ -19,7 +19,16 @@ public interface MarketDataMapper {
 
     @Select("SELECT * FROM market_data WHERE exchange = #{exchange} AND symbol = #{symbol} ORDER BY created_at DESC LIMIT #{limit}")
     List<MarketData> getLatestMarketData(String exchange, String symbol, int limit);
+    
+    @Select("SELECT * FROM market_data ORDER BY created_at DESC LIMIT #{limit}")
+    List<MarketData> getAllLatestMarketData(int limit);
+    
+    @Select("SELECT * FROM market_data WHERE exchange = #{exchange} ORDER BY created_at DESC LIMIT #{limit}")
+    List<MarketData> getLatestMarketDataByExchange(String exchange, int limit);
 
     @Select("SELECT COUNT(*) FROM market_data WHERE exchange = #{exchange} AND DATE(created_at) = CURDATE()")
     int getTodayDataCount(String exchange);
+    
+    @Select("SELECT COUNT(*) FROM market_data WHERE DATE(created_at) = CURDATE()")
+    int getAllTodayDataCount();
 }

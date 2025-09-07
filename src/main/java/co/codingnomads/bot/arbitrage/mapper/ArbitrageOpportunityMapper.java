@@ -19,6 +19,9 @@ public interface ArbitrageOpportunityMapper {
 
     @Select("SELECT * FROM arbitrage_opportunities WHERE symbol = #{symbol} ORDER BY detected_at DESC LIMIT #{limit}")
     List<ArbitrageOpportunity> getLatestOpportunities(String symbol, int limit);
+    
+    @Select("SELECT * FROM arbitrage_opportunities ORDER BY detected_at DESC LIMIT #{limit}")
+    List<ArbitrageOpportunity> getAllLatestOpportunities(int limit);
 
     @Select("SELECT COUNT(*) FROM arbitrage_opportunities WHERE DATE(detected_at) = CURDATE()")
     int getTodayOpportunityCount();
