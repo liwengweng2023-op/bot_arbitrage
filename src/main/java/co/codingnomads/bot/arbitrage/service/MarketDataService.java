@@ -2,7 +2,8 @@ package co.codingnomads.bot.arbitrage.service;
 
 import co.codingnomads.bot.arbitrage.mapper.MarketDataMapper;
 import co.codingnomads.bot.arbitrage.model.MarketData;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -29,7 +30,7 @@ import java.util.List;
 public class MarketDataService {
 
     // ==================== 日志记录器 ====================
-    private static final Logger logger = Logger.getLogger(MarketDataService.class);
+    private static final Logger logger = LoggerFactory.getLogger(MarketDataService.class);
 
     // ==================== 依赖注入 ====================
     @Autowired
